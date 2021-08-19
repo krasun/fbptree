@@ -16,3 +16,10 @@ func encodeUint16(v uint16) []byte {
 func decodeUint32(data []byte) uint32 {
 	return binary.BigEndian.Uint32(data)
 }
+
+func encodeUint32(v uint32) []byte {
+	var data [4]byte
+	binary.BigEndian.PutUint32(data[:], v)
+
+	return data[:]
+}

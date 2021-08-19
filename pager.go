@@ -3,8 +3,14 @@ package fbptree
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 )
+
+// for mocking the filesystem
+var openFile = os.OpenFile
+
+const minPageSize = 32
 
 // the size of the first metadata block in the file,
 // reserved for different needs
@@ -18,9 +24,13 @@ const pageIdSize = 4 // uint32
 // as a set of pages. The file is splitten into
 // the pages with the fixed size, usually 4096 bytes.
 type pager struct {
-	file       *os.File
-	pageSize   uint16
-	freePages  map[uint32]struct{}
+	file     randomAccessFile
+	pageSize uint16
+
+	freePages map[uint32]*freePage
+	// the pointer to the last free page
+	lastFreePage *freePage
+
 	lastPageId uint32
 }
 
@@ -29,29 +39,55 @@ type metadata struct {
 }
 
 type freePage struct {
-	freePages map[uint32]struct{}
+	pageId uint32
+	ids    map[uint32]struct{}
 	// 0 if does not exist
 	nextPageId uint32
+}
+
+type randomAccessFile interface {
+	io.ReaderAt
+	io.WriterAt
+	io.Closer
+
+	Sync() error
+	Stat() (fs.FileInfo, error)
+}
+
+// newPager instantiates new pager for the given file. If the file exists,
+func openPager(path string, pageSize uint16) (*pager, error) {
+	file, err := openFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", path, err)
+	}
+
+	pager, err := newPager(file, pageSize)
+	if err != nil {
+		file.Close()
+
+		return nil, fmt.Errorf("failed to instantiate the pager: %w", err)
+	}
+
+	return pager, nil
 }
 
 // newPager instantiates new pager for the given file. If the file exists,
 // it opens the file and reads its metadata and checks invariants, otherwise
 // it creates a new file and populates it with the metadata.
-func newPager(path string, pageSize uint16) (*pager, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open %s: %w", path, err)
+func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
+	if pageSize < minPageSize {
+		return nil, fmt.Errorf("page size must be greater than or equal to %d", minPageSize)
 	}
 
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat the file %s: %w", path, err)
+		return nil, fmt.Errorf("failed to stat the file: %w", err)
 	}
 
 	size := info.Size()
 	if size == 0 {
 		// initialize free pages block and metadata block
-		p := &pager{file, pageSize, make(map[uint32]struct{}), 0}
+		p := &pager{file, pageSize, make(map[uint32]*freePage), nil, 0}
 		if err := initializeMetadata(p); err != nil {
 			return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 		}
@@ -76,7 +112,7 @@ func newPager(path string, pageSize uint16) (*pager, error) {
 		return nil, fmt.Errorf("the file was created with page size %d, but given page size is %d", metadata.pageSize, pageSize)
 	}
 
-	freePages, err := readFreePages(file, pageSize)
+	freePages, lastFreePage, err := readFreePages(file, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read free pages: %w", err)
 	}
@@ -84,19 +120,15 @@ func newPager(path string, pageSize uint16) (*pager, error) {
 	used := (size - metadataSize)
 	lastPageId := uint32(0)
 	if used > 0 {
-		lastPageId = uint32(used/int64(pageSize)) - 1
+		lastPageId = uint32(used / int64(pageSize))
 	}
 
-	return &pager{file, pageSize, freePages, lastPageId}, nil
+	return &pager{file, pageSize, freePages, lastFreePage, lastPageId}, nil
 }
 
 func initializeMetadata(p *pager) error {
-	if _, err := p.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("failed to seek to the beginning of the file: %w", err)
-	}
-
 	data := encodeMetadata(&metadata{p.pageSize})
-	if n, err := p.file.Write(data); err != nil {
+	if n, err := p.file.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("failed to write the metadata to the file: %w", err)
 	} else if n < len(data) {
 		return fmt.Errorf("failed to write all the data to the file, wrote %d bytes: %w", n, err)
@@ -115,37 +147,42 @@ func initializeFreePages(p *pager) error {
 		return fmt.Errorf("expected new page id to be %d for the new file, but got %d", firstFreePageId, pageId)
 	}
 
+	ids := make(map[uint32]struct{})
+	p.lastFreePage = &freePage{pageId, ids, 0}
+
 	return nil
 }
 
 // readFreePages reads and initializes the list of free pages.
-func readFreePages(f *os.File, pageSize uint16) (map[uint32]struct{}, error) {
-	freePages := make(map[uint32]struct{})
+func readFreePages(r io.ReaderAt, pageSize uint16) (map[uint32]*freePage, *freePage, error) {
+	freePages := make(map[uint32]*freePage)
 
 	freePageId := firstFreePageId
+	var lastFreePage *freePage
 	for freePageId != 0 {
-		freePage, err := readFreePage(f, firstFreePageId, pageSize)
+		freePage, err := readFreePage(r, freePageId, pageSize)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read free page ")
+			return nil, nil, fmt.Errorf("failed to read free page")
 		}
 
-		for id, value := range freePage.freePages {
-			freePages[id] = value
+		for id := range freePage.ids {
+			freePages[id] = freePage
 		}
 
+		lastFreePage = freePage
 		freePageId = freePage.nextPageId
 	}
 
-	return freePages, nil
+	return freePages, lastFreePage, nil
 }
 
-func readFreePage(f *os.File, pageId uint32, pageSize uint16) (*freePage, error) {
-	data, err := readPage(f, pageId, pageSize)
+func readFreePage(r io.ReaderAt, pageId uint32, pageSize uint16) (*freePage, error) {
+	data, err := readPage(r, pageId, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read page %d: %w", pageId, err)
 	}
 
-	freePage, err := decodeFreePage(data)
+	freePage, err := decodeFreePage(pageId, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode free page: %w", err)
 	}
@@ -153,7 +190,7 @@ func readFreePage(f *os.File, pageId uint32, pageSize uint16) (*freePage, error)
 	return freePage, nil
 }
 
-func decodeFreePage(data []byte) (*freePage, error) {
+func decodeFreePage(pageId uint32, data []byte) (*freePage, error) {
 	pageIdNum := (len(data) - pageIdSize) / pageIdSize
 	freePages := make(map[uint32]struct{})
 	for i := 0; i < pageIdNum; i++ {
@@ -168,17 +205,13 @@ func decodeFreePage(data []byte) (*freePage, error) {
 
 	nextPageId := decodeUint32(data[len(data)-pageIdSize:])
 
-	return &freePage{freePages, nextPageId}, nil
+	return &freePage{pageId, freePages, nextPageId}, nil
 }
 
 // reads and decodes metadata from the specified file.
-func readMetadata(f *os.File) (*metadata, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek to the beginning of the file: %w", err)
-	}
-
+func readMetadata(r io.ReaderAt) (*metadata, error) {
 	data := make([]byte, metadataSize)
-	if read, err := f.Read(data[:]); err != nil {
+	if read, err := r.ReadAt(data[:], 0); err != nil {
 		return nil, fmt.Errorf("failed to read metadata from the file: %w", err)
 	} else if read != metadataSize {
 		return nil, fmt.Errorf("failed to read metadata from the file: read %d bytes, but must %d", read, metadataSize)
@@ -204,9 +237,18 @@ func encodeMetadata(m *metadata) []byte {
 // decodes and returns metadata from the given byte slice.
 func decodeMetadata(data []byte) (*metadata, error) {
 	// the first block is the page size, encoded as uint32
-	pageSize := decodeUint16(data[0:1])
+	pageSize := decodeUint16(data[0:2])
 
 	return &metadata{pageSize: pageSize}, nil
+}
+
+// firstPageId returns the identifier of the first page that can be used
+// to store data.
+// The page itself is not necessarily free or used, the idea of this function
+// is to allow to store some initial data for the application and have consistent pointer
+// to this data.
+func (p *pager) firstPageId() uint32 {
+	return firstFreePageId + 1
 }
 
 // newPage returns an identifier of the page that is free
@@ -214,6 +256,15 @@ func decodeMetadata(data []byte) (*metadata, error) {
 func (p *pager) new() (uint32, error) {
 	if len(p.freePages) > 0 {
 		for freePageId := range p.freePages {
+			freePage := p.freePages[freePageId]
+			delete(freePage.ids, freePageId)
+
+			data := encodeFreePage(freePage, p.pageSize)
+			if err := writePage(p.file, freePage.pageId, data, p.pageSize); err != nil {
+				freePage.ids[freePageId] = struct{}{}
+				return 0, fmt.Errorf("failed to update the free page: %w", err)
+			}
+
 			defer delete(p.freePages, freePageId)
 
 			return freePageId, nil
@@ -221,12 +272,8 @@ func (p *pager) new() (uint32, error) {
 	}
 
 	offset := int64((p.lastPageId)*uint32(p.pageSize)) + metadataSize
-	if _, err := p.file.Seek(offset, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("failed to seek to %d: %w", offset, err)
-	}
-
 	data := make([]byte, p.pageSize)
-	if n, err := p.file.Write(data); err != nil {
+	if n, err := p.file.WriteAt(data, offset); err != nil {
 		return 0, fmt.Errorf("failed to write empty block: %w", err)
 	} else if n < int(p.pageSize) {
 		return 0, fmt.Errorf("failed to write all bytes of the empty block, wrote only %d bytes", n)
@@ -237,33 +284,102 @@ func (p *pager) new() (uint32, error) {
 	return p.lastPageId, nil
 }
 
+func (p *pager) isFree(pageId uint32) bool {
+	if _, isFreePage := p.freePages[pageId]; isFreePage {
+		return true
+	}
+
+	return pageId > p.lastPageId
+}
+
 // free marks the page as free and the page can be reused.
 func (p *pager) free(pageId uint32) error {
-	p.freePages[pageId] = struct{}{}
+	if p.isFree(pageId) {
+		return fmt.Errorf("the page is already free")
+	}
+
+	if (len(p.lastFreePage.ids)*pageIdSize + pageIdSize) < int(p.pageSize) {
+		p.lastFreePage.ids[pageId] = struct{}{}
+		data := encodeFreePage(p.lastFreePage, p.pageSize)
+		if err := writePage(p.file, p.lastFreePage.pageId, data, p.pageSize); err != nil {
+			// revert the changes
+			delete(p.lastFreePage.ids, pageId)
+
+			return fmt.Errorf("failed to update the last free page: %w", err)
+		}
+
+		p.freePages[pageId] = p.lastFreePage
+	} else {
+		newPageId, err := p.new()
+		if err != nil {
+			return fmt.Errorf("failed to instantiate new page: %w", err)
+		}
+
+		newIds := make(map[uint32]struct{})
+		newIds[pageId] = struct{}{}
+		newFreePage := &freePage{newPageId, newIds, 0}
+
+		data := encodeFreePage(newFreePage, p.pageSize)
+		if err := writePage(p.file, newPageId, data, p.pageSize); err != nil {
+			return fmt.Errorf("failed to write the new free page: %w", err)
+		}
+
+		p.lastFreePage.nextPageId = newPageId
+		data = encodeFreePage(p.lastFreePage, p.pageSize)
+		if err := writePage(p.file, p.lastFreePage.pageId, data, p.pageSize); err != nil {
+			// revert the changes
+			p.lastFreePage.nextPageId = 0
+
+			return fmt.Errorf("failed to update the last free page: %w", err)
+		}
+
+		p.lastFreePage = newFreePage
+		p.freePages[pageId] = newFreePage
+	}
 
 	return nil
+}
+
+// encodeFreePage encodes free page identifiers into the chunks of byte slices.
+func encodeFreePage(page *freePage, pageSize uint16) []byte {
+	data := make([]byte, pageSize)
+	copy(data[len(data)-pageIdSize:], encodeUint32(page.nextPageId))
+
+	i := 0
+	for freePageId := range page.ids {
+		copy(data[i:], encodeUint32(freePageId))
+		i += pageIdSize
+	}
+
+	return data
 }
 
 // read reads the page contents by the page identifier and returns
 // its contents.
 func (p *pager) read(pageId uint32) ([]byte, error) {
-	// check that page is not removed (not in free list and exists)
-	// pageId < current max page id && not in free list
-	if pageId > p.lastPageId {
-		return nil, fmt.Errorf("page %d does not exist", pageId)
+	if p.isFree(pageId) {
+		return nil, fmt.Errorf("page %d does not exist or free", pageId)
 	}
 
 	return readPage(p.file, pageId, p.pageSize)
 }
 
-func readPage(f *os.File, pageId uint32, pageSize uint16) ([]byte, error) {
-	offset := int64(metadataSize + pageId*uint32(pageSize))
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to seek at %d: %w", offset, err)
+func writePage(w io.WriterAt, pageId uint32, data []byte, pageSize uint16) error {
+	offset := int64(metadataSize + (pageId-1)*uint32(pageSize))
+
+	if n, err := w.WriteAt(data, offset); err != nil {
+		return fmt.Errorf("failed to write the page: %w", err)
+	} else if n != len(data) {
+		return fmt.Errorf("failed to write %d bytes, wrote %d", len(data), n)
 	}
 
+	return nil
+}
+
+func readPage(r io.ReaderAt, pageId uint32, pageSize uint16) ([]byte, error) {
+	offset := int64(metadataSize + (pageId-1)*uint32(pageSize))
 	data := make([]byte, pageSize)
-	if n, err := f.Read(data); err != nil {
+	if n, err := r.ReadAt(data, offset); err != nil {
 		return nil, fmt.Errorf("failed to read the page data: %w", err)
 	} else if n != int(pageSize) {
 		return nil, fmt.Errorf("failed to read %d bytes, read %d", pageSize, n)
@@ -274,12 +390,22 @@ func readPage(f *os.File, pageId uint32, pageSize uint16) ([]byte, error) {
 
 // write writes the page content.
 func (p *pager) write(pageId uint32, data []byte) error {
+	if p.isFree(pageId) {
+		return fmt.Errorf("page %d does not exist or free", pageId)
+	}
 
-	return nil
+	if len(data) != int(p.pageSize) {
+		return fmt.Errorf("data length %d is greater than the page size %d", len(data), p.pageSize)
+	}
+
+	return writePage(p.file, pageId, data, p.pageSize)
 }
 
-// truncate removes the free pages that are placed at the end of file.
-func (p *pager) truncate() error {
+// compact removes the free pages that are placed at the end of file and
+// if the free page lists does not contains any free page, it frees the free page list.
+func (p *pager) compact() error {
+	// TODO: remove free empty pages
+	// TODO: truncate the file with free pages // p.file.Truncate()
 
 	return nil
 }
@@ -293,8 +419,12 @@ func (p *pager) flush() error {
 	return nil
 }
 
-// close closes the pager and all underlying resources.
+// close flushes the changes and closes all underlying resources.
 func (p *pager) close() error {
+	if err := p.file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+
 	if err := p.file.Close(); err != nil {
 		return fmt.Errorf("failed to close the file: %w", err)
 	}

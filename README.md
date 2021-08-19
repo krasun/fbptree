@@ -15,6 +15,13 @@ To install, run:
 go get github.com/krasun/fbptree
 ```
 
+## Usage
+
+An example of usage: 
+```
+
+```
+
 ## Tests
 
 Run tests with: 
