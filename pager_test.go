@@ -23,8 +23,8 @@ func TestNewPagerInitializesProperly(t *testing.T) {
 	}
 	defer p.close()
 
-	if len(p.freePages) != 0 {
-		t.Fatalf("expected free pages size is 0, but got %d", len(p.freePages))
+	if len(p.isFreePage) != 0 {
+		t.Fatalf("expected free pages size is 0, but got %d", len(p.isFreePage))
 	}
 
 	if p.lastPageId != firstFreePageId {
@@ -59,7 +59,7 @@ func TestNewPage(t *testing.T) {
 		t.Fatalf("new page id must be >= %d:", firstFreePageId)
 	}
 
-	_, exists := p.freePages[newPageId]
+	_, exists := p.isFreePage[newPageId]
 	if exists {
 		t.Fatalf("new page id must not be in the free page list")
 	}
@@ -105,7 +105,7 @@ func TestDeleteFreeSparseFile(t *testing.T) {
 		t.Fatalf("failed to free page: %s", err)
 	}
 
-	_, exists := p.freePages[freePageId]
+	_, exists := p.isFreePage[freePageId]
 	if !exists {
 		t.Fatalf("new page id must be in the free page list")
 	}
@@ -215,7 +215,7 @@ func TestNewAfterFreeUsesFreePage(t *testing.T) {
 		t.Fatalf("new page id must be equal to free page id %d, but got %d", freePageId, newPageId)
 	}
 
-	_, exists := p.freePages[newPageId]
+	_, exists := p.isFreePage[newPageId]
 	if exists {
 		t.Fatalf("new page id must not be in the free page list")
 	}
@@ -580,16 +580,200 @@ func TestErrorOnStat(t *testing.T) {
 	}
 }
 
-func TestCompactForEmptyFreePages(t *testing.T) {
+func TestCompactFreesAllPagesAndFreePageListItself(t *testing.T) {
+	dbDir, _ := ioutil.TempDir(os.TempDir(), "example")
+	defer func() {
+		if err := os.RemoveAll(dbDir); err != nil {
+			panic(fmt.Errorf("failed to remove %s: %w", dbDir, err))
+		}
+	}()
 
+	var pageSize uint16 = 4096
+	p, err := openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+	defer p.close()
+
+	iterations := int((pageSize / pageIdSize) + 1)
+	ids := make([]uint32, 0)
+	for i := 0; i <= iterations; i++ {
+		freePageId, err := p.new()
+		if err != nil {
+			t.Fatalf("failed to new page: %s", err)
+		}
+
+		ids = append(ids, freePageId)
+	}
+
+	for _, freePageId := range ids {
+		err = p.free(freePageId)
+		if err != nil {
+			t.Fatalf("failed to free page: %s", err)
+		}
+	}
+
+	stat, err := p.file.Stat()
+	if err != nil {
+		t.Fatalf("failed to stat file: %s", err)
+	}
+
+	// metadata + iterations + 2 free pages
+	expectedSize := metadataSize + 4096*(iterations+2)
+	if stat.Size() != int64(expectedSize) {
+		t.Fatalf("expected file size %d, but got %d", expectedSize, stat.Size())
+	}
+
+	p.close()
+
+	p, err = openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+
+	err = p.compact()
+	if err != nil {
+		t.Fatalf("failed to compact: %s", err)
+	}
+
+	err = p.flush()
+	if err != nil {
+		t.Fatalf("failed to flush: %s", err)
+	}
+
+	stat, err = p.file.Stat()
+	if err != nil {
+		t.Fatalf("failed to stat file: %s", err)
+	}
+
+	// metadata + 1 free page container
+	expectedSize = metadataSize + int(pageSize)
+	if stat.Size() != int64(expectedSize) {
+		t.Fatalf("expected file size %d, but got %d", expectedSize, stat.Size())
+	}
 }
 
-func TestCompactTruncatesFile(t *testing.T) {
+func TestCompactReadWriteAfterCompact(t *testing.T) {
+	dbDir, _ := ioutil.TempDir(os.TempDir(), "example")
+	defer func() {
+		if err := os.RemoveAll(dbDir); err != nil {
+			panic(fmt.Errorf("failed to remove %s: %w", dbDir, err))
+		}
+	}()
 
-}
+	var pageSize uint16 = 4096
+	p, err := openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+	defer p.close()
 
-func TestCompact(t *testing.T) {
+	iterations := int((pageSize / pageIdSize) + 1)
+	ids := make([]uint32, 0)
+	for i := 0; i <= iterations; i++ {
+		freePageId, err := p.new()
+		if err != nil {
+			t.Fatalf("failed to new page: %s", err)
+		}
 
+		ids = append(ids, freePageId)
+	}
+
+	for _, freePageId := range ids {
+		err = p.free(freePageId)
+		if err != nil {
+			t.Fatalf("failed to free page: %s", err)
+		}
+	}
+
+	stat, err := p.file.Stat()
+	if err != nil {
+		t.Fatalf("failed to stat file: %s", err)
+	}
+
+	// metadata + iterations + 2 free pages
+	expectedSize := metadataSize + int(pageSize)*(iterations+2)
+	if stat.Size() != int64(expectedSize) {
+		t.Fatalf("expected file size %d, but got %d", expectedSize, stat.Size())
+	}
+
+	err = p.close()
+	if err != nil {
+		t.Fatalf("failed to close: %s", err)
+	}
+
+	p, err = openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+
+	err = p.compact()
+	if err != nil {
+		t.Fatalf("failed to compact: %s", err)
+	}
+
+	err = p.flush()
+	if err != nil {
+		t.Fatalf("failed to flush: %s", err)
+	}
+
+	err = p.close()
+	if err != nil {
+		t.Fatalf("failed to close: %s", err)
+	}
+
+	p, err = openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+
+	newPageId, err := p.new()
+	if err != nil {
+		t.Fatalf("failed to new page: %s", err)
+	}
+
+	var writtenData [4096]byte
+	// some random data
+	writtenData[0] = 1
+	writtenData[2] = 3
+	writtenData[1023] = 10
+	writtenData[2034] = 0xAE
+
+	err = p.write(newPageId, writtenData[:])
+	if err != nil {
+		t.Fatalf("failed to write the page: %s", err)
+	}
+
+	stat, err = p.file.Stat()
+	if err != nil {
+		t.Fatalf("failed to stat file: %s", err)
+	}
+
+	// metadata + free page + new page
+	expectedSize = metadataSize + int(pageSize)*2
+	if stat.Size() != int64(expectedSize) {
+		t.Fatalf("expected file size %d, but got %d", expectedSize, stat.Size())
+	}
+
+	err = p.close()
+	if err != nil {
+		t.Fatalf("failed to close the pager: %s", err)
+	}
+
+	p, err = openPager(path.Join(dbDir, "test.db"), pageSize)
+	if err != nil {
+		t.Fatalf("failed to initialize the pager: %s", err)
+	}
+	defer p.close()
+
+	readData, err := p.read(newPageId)
+	if err != nil {
+		t.Fatalf("failed to read the data: %s", err)
+	}
+
+	if !bytes.Equal(writtenData[:], readData) {
+		t.Fatalf("the written data is not equal to the read data")
+	}
 }
 
 type mockedFile struct {

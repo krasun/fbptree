@@ -117,8 +117,8 @@ func TestFreeLargerThanOnePage(t *testing.T) {
 		t.Fatalf("failed to initialize the pager: %s", err)
 	}
 
-	if len(p.freePages) < 5 {
-		t.Fatalf("must have at least 3 pages, but has %d", len(p.freePages))
+	if len(p.isFreePage) < 5 {
+		t.Fatalf("must have at least 3 pages, but has %d", len(p.isFreePage))
 	}
 
 	err = p.close()

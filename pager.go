@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 )
 
@@ -11,6 +12,7 @@ import (
 var openFile = os.OpenFile
 
 const minPageSize = 32
+const maxPageSize = math.MaxUint16
 
 // the size of the first metadata block in the file,
 // reserved for different needs
@@ -27,11 +29,19 @@ type pager struct {
 	file     randomAccessFile
 	pageSize uint16
 
-	freePages map[uint32]*freePage
+	// id is any free page that can be used
+	// and the value is free page container
+	isFreePage map[uint32]*freePage
 	// the pointer to the last free page
 	lastFreePage *freePage
 
+	// last page id is last created page id
+	// it can be free or used - it does not matter
 	lastPageId uint32
+
+	freePages map[uint32]*freePage
+	// key is the id of the page and the value is the id of the previous page
+	prevPageIds map[uint32]uint32
 }
 
 type metadata struct {
@@ -45,6 +55,19 @@ type freePage struct {
 	nextPageId uint32
 }
 
+func (p *freePage) copy() *freePage {
+	newIds := make(map[uint32]struct{})
+	for key, value := range p.ids {
+		newIds[key] = value
+	}
+
+	return &freePage{
+		p.pageId,
+		newIds,
+		p.nextPageId,
+	}
+}
+
 type randomAccessFile interface {
 	io.ReaderAt
 	io.WriterAt
@@ -52,6 +75,7 @@ type randomAccessFile interface {
 
 	Sync() error
 	Stat() (fs.FileInfo, error)
+	Truncate(size int64) error
 }
 
 // newPager instantiates new pager for the given file. If the file exists,
@@ -87,7 +111,7 @@ func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
 	size := info.Size()
 	if size == 0 {
 		// initialize free pages block and metadata block
-		p := &pager{file, pageSize, make(map[uint32]*freePage), nil, 0}
+		p := &pager{file, pageSize, make(map[uint32]*freePage), nil, 0, make(map[uint32]*freePage), make(map[uint32]uint32)}
 		if err := initializeMetadata(p); err != nil {
 			return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 		}
@@ -112,7 +136,7 @@ func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
 		return nil, fmt.Errorf("the file was created with page size %d, but given page size is %d", metadata.pageSize, pageSize)
 	}
 
-	freePages, lastFreePage, err := readFreePages(file, pageSize)
+	isFreePage, lastFreePage, freePages, prevPageIds, err := readFreePages(file, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read free pages: %w", err)
 	}
@@ -123,7 +147,7 @@ func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
 		lastPageId = uint32(used / int64(pageSize))
 	}
 
-	return &pager{file, pageSize, freePages, lastFreePage, lastPageId}, nil
+	return &pager{file, pageSize, isFreePage, lastFreePage, lastPageId, freePages, prevPageIds}, nil
 }
 
 func initializeMetadata(p *pager) error {
@@ -148,32 +172,43 @@ func initializeFreePages(p *pager) error {
 	}
 
 	ids := make(map[uint32]struct{})
-	p.lastFreePage = &freePage{pageId, ids, 0}
+	freePage := &freePage{pageId, ids, 0}
+	p.lastFreePage = freePage
+	p.freePages[pageId] = freePage
 
 	return nil
 }
 
 // readFreePages reads and initializes the list of free pages.
-func readFreePages(r io.ReaderAt, pageSize uint16) (map[uint32]*freePage, *freePage, error) {
+func readFreePages(r io.ReaderAt, pageSize uint16) (map[uint32]*freePage, *freePage, map[uint32]*freePage, map[uint32]uint32, error) {
+	isFreePage := make(map[uint32]*freePage)
 	freePages := make(map[uint32]*freePage)
+	prevPageIds := make(map[uint32]uint32)
 
+	var prevPageId uint32
 	freePageId := firstFreePageId
 	var lastFreePage *freePage
 	for freePageId != 0 {
 		freePage, err := readFreePage(r, freePageId, pageSize)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read free page")
+			return nil, nil, nil, nil, fmt.Errorf("failed to read free page: %w", err) 
 		}
 
 		for id := range freePage.ids {
-			freePages[id] = freePage
+			isFreePage[id] = freePage
 		}
+		freePages[freePageId] = freePage
+
+		if prevPageId != 0 {
+			prevPageIds[freePageId] = prevPageId
+		}
+		prevPageId = freePageId
 
 		lastFreePage = freePage
 		freePageId = freePage.nextPageId
 	}
 
-	return freePages, lastFreePage, nil
+	return isFreePage, lastFreePage, freePages, prevPageIds, nil
 }
 
 func readFreePage(r io.ReaderAt, pageId uint32, pageSize uint16) (*freePage, error) {
@@ -254,9 +289,9 @@ func (p *pager) firstPageId() uint32 {
 // newPage returns an identifier of the page that is free
 // and can be used for write.
 func (p *pager) new() (uint32, error) {
-	if len(p.freePages) > 0 {
-		for freePageId := range p.freePages {
-			freePage := p.freePages[freePageId]
+	if len(p.isFreePage) > 0 {
+		for freePageId := range p.isFreePage {
+			freePage := p.isFreePage[freePageId]
 			delete(freePage.ids, freePageId)
 
 			data := encodeFreePage(freePage, p.pageSize)
@@ -265,7 +300,7 @@ func (p *pager) new() (uint32, error) {
 				return 0, fmt.Errorf("failed to update the free page: %w", err)
 			}
 
-			defer delete(p.freePages, freePageId)
+			delete(p.isFreePage, freePageId)
 
 			return freePageId, nil
 		}
@@ -285,11 +320,9 @@ func (p *pager) new() (uint32, error) {
 }
 
 func (p *pager) isFree(pageId uint32) bool {
-	if _, isFreePage := p.freePages[pageId]; isFreePage {
-		return true
-	}
+	_, isFreePage := p.isFreePage[pageId]
 
-	return pageId > p.lastPageId
+	return isFreePage
 }
 
 // free marks the page as free and the page can be reused.
@@ -299,6 +332,7 @@ func (p *pager) free(pageId uint32) error {
 	}
 
 	if (len(p.lastFreePage.ids)*pageIdSize + pageIdSize) < int(p.pageSize) {
+		// update the page that contains the free pages
 		p.lastFreePage.ids[pageId] = struct{}{}
 		data := encodeFreePage(p.lastFreePage, p.pageSize)
 		if err := writePage(p.file, p.lastFreePage.pageId, data, p.pageSize); err != nil {
@@ -308,8 +342,9 @@ func (p *pager) free(pageId uint32) error {
 			return fmt.Errorf("failed to update the last free page: %w", err)
 		}
 
-		p.freePages[pageId] = p.lastFreePage
+		p.isFreePage[pageId] = p.lastFreePage
 	} else {
+		// if there is not enough space for the free page list
 		newPageId, err := p.new()
 		if err != nil {
 			return fmt.Errorf("failed to instantiate new page: %w", err)
@@ -333,8 +368,10 @@ func (p *pager) free(pageId uint32) error {
 			return fmt.Errorf("failed to update the last free page: %w", err)
 		}
 
+		p.prevPageIds[newPageId] = p.lastFreePage.pageId
 		p.lastFreePage = newFreePage
-		p.freePages[pageId] = newFreePage
+		p.isFreePage[pageId] = newFreePage
+		p.freePages[newPageId] = newFreePage
 	}
 
 	return nil
@@ -404,10 +441,109 @@ func (p *pager) write(pageId uint32, data []byte) error {
 // compact removes the free pages that are placed at the end of file and
 // if the free page lists does not contains any free page, it frees the free page list.
 func (p *pager) compact() error {
-	// TODO: remove free empty pages
-	// TODO: truncate the file with free pages // p.file.Truncate()
+	newLastPageId := p.lastPageId
+	removeFreePageIds := make([]uint32, 0)
+	removeFreePages := make(map[uint32]*freePage)
+	// the copy of free pages to be updated
+	updateFreePages := make(map[uint32]*freePage)
+	for pageId := p.lastPageId; pageId > firstFreePageId; pageId-- {
+		if p.isFree(pageId) {
+			removeFreePageIds = append(removeFreePageIds, pageId)
+
+			freePage := p.isFreePage[pageId]
+			updatePage, ok := updateFreePages[freePage.pageId]
+			if !ok {
+				updatePage = freePage.copy()
+				updateFreePages[updatePage.pageId] = updatePage	
+			} 
+			delete(updatePage.ids, pageId)
+
+			newLastPageId = pageId - 1
+		} else if p.canDeleteFreePage(pageId) {
+			freePage := p.freePages[pageId]
+			removeFreePages[pageId] = freePage
+
+			if prevPageId, ok := p.prevPageIds[pageId]; ok {
+				prevPage := p.freePages[prevPageId]
+				updatePage, ok := updateFreePages[prevPageId]
+				if !ok {
+					updatePage = prevPage.copy()
+					updateFreePages[prevPageId] = updatePage
+				}
+				updatePage.nextPageId = freePage.nextPageId
+			}
+
+			newLastPageId = pageId - 1
+		} else {
+			break
+		}
+	}
+
+	// update free pages and last free page id
+	freeBytes := int64(len(removeFreePages)+len(removeFreePageIds)) * int64(p.pageSize)
+	if freeBytes == 0 {
+		return nil
+	}
+
+	stat, err := p.file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get the file size: %w", err)
+	}
+
+	newSize := stat.Size() - freeBytes
+	err = p.file.Truncate(newSize)
+	if err != nil {
+		return fmt.Errorf("failed to truncate the file: %w", err)
+	}
+
+	for pageId := range removeFreePages {
+		delete(updateFreePages, pageId)
+	}
+	for pageId, updatePage := range updateFreePages {
+		data := encodeFreePage(updatePage, p.pageSize)
+		if err := writePage(p.file, pageId, data, p.pageSize); err != nil {
+			return fmt.Errorf("failed to update the free page: %w", err)
+		}
+	}
+
+	for pageId, updateFreePage := range updateFreePages {
+		freePage := p.freePages[pageId]
+		freePage.pageId = updateFreePage.pageId
+		freePage.ids = updateFreePage.ids
+		freePage.nextPageId = updateFreePage.nextPageId
+	}
+	for _, removeId := range removeFreePageIds {
+		delete(p.isFreePage, removeId)
+	}
+	for pageId, removePage := range removeFreePages {
+		if p.lastFreePage == removePage {
+			p.lastFreePage = p.freePages[p.prevPageIds[removePage.pageId]]
+		}
+
+		delete(p.prevPageIds, pageId)
+		delete(p.freePages, pageId)
+	}
+
+	p.lastPageId = newLastPageId
 
 	return nil
+}
+
+// canDeleteFreePage checks if the page is a free page list container
+// and if all the pages in the container are free.
+func (p *pager) canDeleteFreePage(pageId uint32) bool {
+	freePage, isFreePage := p.freePages[pageId]
+	if !isFreePage {
+		return false
+	}
+
+	for id := range freePage.ids {
+		if _, isFree := p.isFreePage[id]; !isFree {
+			return false
+		}
+	}
+
+	return true
 }
 
 // flush flushes all the changes of the file to the persistent disk.

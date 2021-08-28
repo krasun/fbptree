@@ -162,20 +162,18 @@ func reset(data []byte) {
 
 // Free frees all pages used by the record.
 func (r *records) free(recordId uint32) error {
-	data, err := r.pager.read(recordId)
-	if err != nil {
-		return fmt.Errorf("failed to read initial record page: %w", err)
-	}
-
-	for nextId := recordId; nextId != 0; nextId = nextRecordId(data) {
-		data, err = r.pager.read(nextId)
+	nextId := recordId
+	for nextId != 0 {
+		pageId := nextId
+		data, err := r.pager.read(pageId)
 		if err != nil {
-			return fmt.Errorf("failed to read page %d: %w", nextId, err)
+			return fmt.Errorf("failed to read record page %d: %w", pageId, err)
 		}
+		nextId = nextRecordId(data)
 
-		err = r.pager.free(nextId)
+		err = r.pager.free(pageId)
 		if err != nil {
-			return fmt.Errorf("failed to free page %d: %w", nextId, err)
+			return fmt.Errorf("failed to free page %d: %w", pageId, err)
 		}
 	}
 
