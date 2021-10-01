@@ -23,6 +23,7 @@ func newRecords(pager *pager) *records {
 // The record itself is not necessarily free or used, the idea of this function
 // is to allow to store some initial data for the application and have consistent pointer
 // to this data.
+// The better approach is to use metadata for such purposes.
 func (r *records) firstRecordId() uint32 {
 	return r.pager.firstPageId()
 }
