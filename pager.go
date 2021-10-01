@@ -277,15 +277,6 @@ func decodeMetadata(data []byte) (*metadata, error) {
 	return &metadata{pageSize: pageSize}, nil
 }
 
-// firstPageId returns the identifier of the first page that can be used
-// to store data.
-// The page itself is not necessarily free or used, the idea of this function
-// is to allow to store some initial data for the application and have consistent pointer
-// to this data.
-func (p *pager) firstPageId() uint32 {
-	return firstFreePageId + 1
-}
-
 // newPage returns an identifier of the page that is free
 // and can be used for write.
 func (p *pager) new() (uint32, error) {

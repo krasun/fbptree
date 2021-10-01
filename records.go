@@ -18,16 +18,6 @@ func newRecords(pager *pager) *records {
 	return &records{pager}
 }
 
-// firstRecordId the identifier of the first record that can be used
-// to store data.
-// The record itself is not necessarily free or used, the idea of this function
-// is to allow to store some initial data for the application and have consistent pointer
-// to this data.
-// The better approach is to use metadata for such purposes.
-func (r *records) firstRecordId() uint32 {
-	return r.pager.firstPageId()
-}
-
 // new instantiates new record and returns its identifier or error.
 func (r *records) new() (uint32, error) {
 	newPageId, err := r.pager.new()
