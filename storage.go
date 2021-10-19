@@ -18,35 +18,83 @@ func newStorage(path string, pageSize uint16) (*storage, error) {
 }
 
 func (s *storage) loadMetadata() (*treeMetadata, error) {
+	data, err := s.pager.readCustomMetadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata: %w", err)
+	}
 
-	return nil, nil
+	if data == nil {
+		return nil, nil
+	}
+
+	metadata, err := decodeTreeMetadata(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode tree metadata: %w", err)
+	}
+
+	return metadata, nil
 }
 
 func (s *storage) updateMetadata(metadata *treeMetadata) error {
+	data := encodeTreeMetadata(metadata)
+	err := s.pager.writeCustomMetadata(data)
+	if err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
 
 	return nil
 }
 
 func (s *storage) deleteMetadata() error {
+	var empty [0]byte
+	err := s.pager.writeCustomMetadata(empty[:])
+	if err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+
 	return nil
 }
 
 func (s *storage) newNode() (uint32, error) {
+	recordID, err := s.records.new()
+	if err != nil {
+		return 0, fmt.Errorf("failed to instantiate new record: %w", err)
+	}
 
-	return 0, nil
+	return recordID, nil
 }
 
 func (s *storage) updateNodeByID(nodeID uint32, node *node) error {
+	data := encodeNode(node)
+	err := s.records.write(nodeID, data)
+
+	if err != nil {
+		return fmt.Errorf("failed to write the record %d: %w", nodeID, err)
+	}
 
 	return nil
 }
 
 func (s *storage) loadNodeByID(nodeID uint32) (*node, error) {
+	data, err := s.records.read(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read record %d: %w", nodeID, err)
+	}
 
-	return nil, nil
+	node, err := decodeNode(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode record %d: %w", nodeID, err)
+	}
+
+	return node, nil
 }
 
 func (s *storage) deleteNodeByID(nodeID uint32) error {
+	err := s.records.free(nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to free the record %d: %w", nodeID, err)
+	}
+
 	return nil
 }
 

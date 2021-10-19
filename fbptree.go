@@ -3,10 +3,17 @@ package fbptree
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 )
 
 const defaultOrder = 500
+
+const maxKeySize = math.MaxUint16
+const maxValueSize = math.MaxUint16
+
+// the limit for the  B+ tree order, must be less than math.MaxUint16
+const maxOrder = 1000
 
 // FBPTree represents B+ tree store in the file.
 type FBPTree struct {
@@ -21,13 +28,13 @@ type FBPTree struct {
 }
 
 type treeMetadata struct {
-	order      int
+	order      uint16
 	rootID     uint32
 	leftmostID uint32
 }
 
 type config struct {
-	order    int
+	order    uint16
 	pageSize uint16
 }
 
@@ -37,7 +44,11 @@ func Order(order int) func(*config) error {
 			return fmt.Errorf("order must be >= 3")
 		}
 
-		c.order = order
+		if order > maxOrder {
+			return fmt.Errorf("order must be <= %d", maxOrder)
+		}
+
+		c.order = uint16(order)
 
 		return nil
 	}
@@ -88,9 +99,9 @@ func Open(path string, options ...func(*config) error) (*FBPTree, error) {
 		return nil, fmt.Errorf("the tree was created with %d order, but the new order value is given %d", metadata.order, cfg.order)
 	}
 
-	minKeyNum := ceil(cfg.order, 2) - 1
+	minKeyNum := ceil(int(cfg.order), 2) - 1
 
-	return &FBPTree{storage: storage, order: cfg.order, metadata: metadata, minKeyNum: minKeyNum}, nil
+	return &FBPTree{storage: storage, order: int(cfg.order), metadata: metadata, minKeyNum: minKeyNum}, nil
 }
 
 // node reprents a node in the B+ tree.
@@ -118,6 +129,18 @@ type node struct {
 // pointer wraps the node or the value.
 type pointer struct {
 	value interface{}
+}
+
+func (p *pointer) isNodeID() bool {	
+	_, ok := p.value.(uint32)
+
+	return ok
+}
+
+func (p *pointer) isValue() bool {
+	_, ok := p.value.([]byte)
+
+	return ok
 }
 
 // asNode returns a node ID.
@@ -184,6 +207,12 @@ func (t *FBPTree) findLeaf(key []byte) (*node, error) {
 // Put puts the key and the value into the tree. Returns true if the
 // key already exists and anyway overwrites it.
 func (t *FBPTree) Put(key, value []byte) ([]byte, bool, error) {
+	if len(key) > maxKeySize {
+		return nil, false, fmt.Errorf("maximum key size is %d, but received %d", maxKeySize, len(key))
+	} else if len(value) > maxValueSize {
+		return nil, false, fmt.Errorf("maximum value size is %d, but received %d", maxValueSize, len(value))
+	}
+
 	if t.metadata == nil {
 		err := t.initializeRoot(key, value)
 		if err != nil {
@@ -246,7 +275,7 @@ func (t *FBPTree) updateMetadata(rootID, leftmostID uint32) error {
 	if t.metadata == nil {
 		// initialization
 		t.metadata = new(treeMetadata)
-		t.metadata.order = t.order
+		t.metadata.order = uint16(t.order)
 	}
 
 	t.metadata.rootID = rootID

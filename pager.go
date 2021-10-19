@@ -17,6 +17,7 @@ const maxPageSize = math.MaxUint16
 // the size of the first metadata block in the file,
 // reserved for different needs
 const metadataSize = 1000
+const customMetadataPosition = 500
 
 // the id of the first free page
 const firstFreePageId = uint32(1)
@@ -42,10 +43,14 @@ type pager struct {
 	freePages map[uint32]*freePage
 	// key is the id of the page and the value is the id of the previous page
 	prevPageIds map[uint32]uint32
+
+	metadata *metadata
 }
 
 type metadata struct {
 	pageSize uint16
+
+	custom []byte
 }
 
 type freePage struct {
@@ -111,8 +116,8 @@ func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
 	size := info.Size()
 	if size == 0 {
 		// initialize free pages block and metadata block
-		p := &pager{file, pageSize, make(map[uint32]*freePage), nil, 0, make(map[uint32]*freePage), make(map[uint32]uint32)}
-		if err := initializeMetadata(p); err != nil {
+		p := &pager{file, pageSize, make(map[uint32]*freePage), nil, 0, make(map[uint32]*freePage), make(map[uint32]uint32), &metadata{pageSize, nil}}
+		if err := writeMetadata(p.file, p.metadata); err != nil {
 			return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 		}
 
@@ -147,12 +152,12 @@ func newPager(file randomAccessFile, pageSize uint16) (*pager, error) {
 		lastPageId = uint32(used / int64(pageSize))
 	}
 
-	return &pager{file, pageSize, isFreePage, lastFreePage, lastPageId, freePages, prevPageIds}, nil
+	return &pager{file, pageSize, isFreePage, lastFreePage, lastPageId, freePages, prevPageIds, metadata}, nil
 }
 
-func initializeMetadata(p *pager) error {
-	data := encodeMetadata(&metadata{p.pageSize})
-	if n, err := p.file.WriteAt(data, 0); err != nil {
+func writeMetadata(w io.WriterAt, metadata *metadata) error {
+	data := encodeMetadata(metadata)
+	if n, err := w.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("failed to write the metadata to the file: %w", err)
 	} else if n < len(data) {
 		return fmt.Errorf("failed to write all the data to the file, wrote %d bytes: %w", n, err)
@@ -191,7 +196,7 @@ func readFreePages(r io.ReaderAt, pageSize uint16) (map[uint32]*freePage, *freeP
 	for freePageId != 0 {
 		freePage, err := readFreePage(r, freePageId, pageSize)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to read free page: %w", err) 
+			return nil, nil, nil, nil, fmt.Errorf("failed to read free page: %w", err)
 		}
 
 		for id := range freePage.ids {
@@ -266,15 +271,27 @@ func encodeMetadata(m *metadata) []byte {
 	d := encodeUint16(m.pageSize)
 	copy(data[0:len(d)], d)
 
+	if len(m.custom) != 0 {
+		s := encodeUint16(uint16(len(m.custom)))
+		copy(data[customMetadataPosition:customMetadataPosition+len(s)], s)
+		copy(data[customMetadataPosition+len(s):], m.custom)
+	}
+
 	return data
 }
 
 // decodes and returns metadata from the given byte slice.
 func decodeMetadata(data []byte) (*metadata, error) {
-	// the first block is the page size, encoded as uint32
+	// the first block is the page size, encoded as uint16
 	pageSize := decodeUint16(data[0:2])
 
-	return &metadata{pageSize: pageSize}, nil
+	customMetadataSize := decodeUint16(data[customMetadataPosition : customMetadataPosition+2])
+	var customMetadata []byte = nil
+	if customMetadataSize != 0 {
+		customMetadata = data[customMetadataPosition+2 : customMetadataPosition+2+customMetadataSize]
+	}
+
+	return &metadata{pageSize: pageSize, custom: customMetadata}, nil
 }
 
 // newPage returns an identifier of the page that is free
@@ -308,6 +325,33 @@ func (p *pager) new() (uint32, error) {
 	p.lastPageId++
 
 	return p.lastPageId, nil
+}
+
+// writeCustomMetadata writes custom metadata into the metadata section of the file.
+func (p *pager) writeCustomMetadata(data []byte) error {
+	maxCustomMetadataLen := (metadataSize - customMetadataPosition)
+	if len(data) > maxCustomMetadataLen {
+		return fmt.Errorf("custom metadata must be less than %d bytes", maxCustomMetadataLen)
+	}
+
+	p.metadata.custom = data
+
+	err := writeMetadata(p.file, p.metadata)
+	if err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+
+	return nil
+}
+
+// writeMetadata reads custom metadata from the metadata section of the file.
+func (p *pager) readCustomMetadata() ([]byte, error) {
+	metadata, err := readMetadata(p.file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata: %w", err)
+	}
+
+	return metadata.custom, nil
 }
 
 func (p *pager) isFree(pageId uint32) bool {
@@ -445,8 +489,8 @@ func (p *pager) compact() error {
 			updatePage, ok := updateFreePages[freePage.pageId]
 			if !ok {
 				updatePage = freePage.copy()
-				updateFreePages[updatePage.pageId] = updatePage	
-			} 
+				updateFreePages[updatePage.pageId] = updatePage
+			}
 			delete(updatePage.ids, pageId)
 
 			newLastPageId = pageId - 1
