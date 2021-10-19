@@ -97,7 +97,7 @@ func Example() {
 
 	fmt.Println(string(value))
 	// Output:
-	// Hello world, B+ Tree!
+	// Hello world, B+ tree!
 	// Yes, absolutely! The key has been overridden.
 }
 ```

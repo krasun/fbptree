@@ -81,7 +81,7 @@ func Example() {
 
 	fmt.Println(string(value))
 	// Output:
-	// Hello world, B+ Tree!
+	// Hello world, B+ tree!
 	// Yes, absolutely! The key has been overridden.
 }
 
@@ -427,8 +427,11 @@ func TestKeyOrder(t *testing.T) {
 	isSorted := sort.SliceIsSorted(keys, func(i, j int) bool {
 		return keys[i] < keys[j]
 	})
+	if len(keys) == 0 {
+		t.Fatal("keys are empty")
+	}
 	if !isSorted {
-		t.Fatal("keys are not sorted")
+		t.Fatal("keys are empty keys are not sorted")
 	}
 }
 
@@ -470,7 +473,7 @@ func TestPutAndGetRandomized(t *testing.T) {
 		}
 		tree.Close()
 
-		tree, err = Open(dbPath)
+		tree, err = Open(dbPath, Order(order))
 		if err != nil {
 			t.Fatalf("failed to open tree: %s", err)
 		}
@@ -495,7 +498,7 @@ func TestPutAndGetRandomized(t *testing.T) {
 
 func TestPutAndDeleteRandomized(t *testing.T) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
-	size := 10000
+	size := 1000
 	keys := r.Perm(size)
 
 	dbDir, err := ioutil.TempDir(os.TempDir(), "example")
@@ -706,9 +709,12 @@ func TestDelete(t *testing.T) {
 
 		expectedSize := len(treeCases)
 		for _, c := range treeCases {
-			value, deleted, _ := tree.Delete([]byte{c.key})
+			value, deleted, err := tree.Delete([]byte{c.key})
 			expectedSize--
 
+			if err != nil {
+				t.Fatalf("failed to delete key %d: %s", c.key, err)
+			}
 			if !deleted {
 				t.Fatalf("key %d is not deleted, order %d", c.key, order)
 			}
@@ -777,6 +783,57 @@ func TestForEachAfterDeletion(t *testing.T) {
 
 		if !reflect.DeepEqual(expected, actual) {
 			t.Fatalf("%v != %v for key %d (%d)", expected, actual, k, i)
+		}
+	}
+}
+
+func TestDelete1(t *testing.T) {
+	dbDir, err := ioutil.TempDir(os.TempDir(), "example")
+	if err != nil {
+		panic(fmt.Errorf("failed to create %s: %w", dbDir, err))
+	}
+	defer func() {
+		if err := os.RemoveAll(dbDir); err != nil {
+			panic(fmt.Errorf("failed to remove %s: %w", dbDir, err))
+		}
+	}()
+
+	order := 3
+	dbPath := path.Join(dbDir, fmt.Sprintf("sample_%d.data", order))
+	tree, err := Open(dbPath, Order(order))
+	if err != nil {
+		t.Fatalf("failed to open tree: %s", err)
+	}
+
+	for _, c := range treeCases {
+		tree.Put([]byte{c.key}, []byte(c.value))
+	}
+
+	tree.Close()
+
+	tree, _ = Open(dbPath, Order(order))
+	if err != nil {
+		t.Fatalf("failed to open tree: %s", err)
+	}
+
+	for _, c := range treeCases {
+		_, found, _ := tree.Get([]byte{c.key})
+		if !found {
+			t.Fatalf("value for key %d is not found", c.key)
+		}
+
+	}
+
+	expectedSize := len(treeCases)
+	for _, c := range treeCases {		
+		value, deleted, _ := tree.Delete([]byte{c.key})
+		expectedSize--
+
+		if !deleted {
+			t.Fatalf("key %d is not deleted, order %d", c.key, order)
+		}
+		if value == nil {
+			t.Fatalf("value for key %d is nil: %v", c.key, value)
 		}
 	}
 }
