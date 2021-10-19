@@ -1269,6 +1269,22 @@ func (n *node) pointerPositionOf(x *node) int {
 	return -1
 }
 
+// ForEach traverses tree in ascending key order.
+func (t *FBPTree) ForEach(action func(key []byte, value []byte)) {
+	// TODO: implement
+	// for it := t.Iterator(); it.HasNext(); {
+	// 	key, value := it.Next()
+	// 	action(key, value)
+	// }
+}
+
+// Size return the size of the tree.
+func (t *FBPTree) Size() int {
+	// TODO: implement return t.size
+	return 0
+}
+
+
 // Close closes the tree and free the underlying resources.
 func (t *FBPTree) Close() error {
 	if err := t.storage.close(); err != nil {
