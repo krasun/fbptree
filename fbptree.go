@@ -11,6 +11,7 @@ const defaultOrder = 500
 
 const maxKeySize = math.MaxUint16
 const maxValueSize = math.MaxUint16
+const maxTreeSize = math.MaxUint32
 
 // the limit for the  B+ tree order, must be less than math.MaxUint16
 const maxOrder = 1000
@@ -25,14 +26,13 @@ type FBPTree struct {
 
 	// minimum allowed number of keys in the tree ceil(order/2)-1
 	minKeyNum int
-
-	size int
 }
 
 type treeMetadata struct {
 	order      uint16
 	rootID     uint32
 	leftmostID uint32
+	size       uint32
 }
 
 type config struct {
@@ -213,6 +213,8 @@ func (t *FBPTree) Put(key, value []byte) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("maximum key size is %d, but received %d", maxKeySize, len(key))
 	} else if len(value) > maxValueSize {
 		return nil, false, fmt.Errorf("maximum value size is %d, but received %d", maxValueSize, len(value))
+	} else if t.metadata != nil && t.metadata.size >= maxTreeSize {
+		return nil, false, fmt.Errorf("maximum tree size is reached: %d", maxTreeSize)
 	}
 
 	if t.metadata == nil {
@@ -265,7 +267,7 @@ func (t *FBPTree) initializeRoot(key, value []byte) error {
 		return fmt.Errorf("failed to store root node: %w", err)
 	}
 
-	err = t.updateMetadata(newNodeID, newNodeID)
+	err = t.updateMetadata(newNodeID, newNodeID, 1)
 	if err != nil {
 		return fmt.Errorf("failed to update metadata: %w", err)
 	}
@@ -273,7 +275,7 @@ func (t *FBPTree) initializeRoot(key, value []byte) error {
 	return nil
 }
 
-func (t *FBPTree) updateMetadata(rootID, leftmostID uint32) error {
+func (t *FBPTree) updateMetadata(rootID, leftmostID, size uint32) error {
 	if t.metadata == nil {
 		// initialization
 		t.metadata = new(treeMetadata)
@@ -282,6 +284,7 @@ func (t *FBPTree) updateMetadata(rootID, leftmostID uint32) error {
 
 	t.metadata.rootID = rootID
 	t.metadata.leftmostID = leftmostID
+	t.metadata.size = size
 
 	err := t.storage.updateMetadata(t.metadata)
 	if err != nil {
@@ -349,13 +352,17 @@ func (t *FBPTree) putIntoNewRoot(key []byte, l, r *node) error {
 	return nil
 }
 
+func (t *FBPTree) updateSize(size uint32) error {
+	return t.updateMetadata(t.metadata.rootID, t.metadata.leftmostID, size)
+}
+
 func (t *FBPTree) updateRootID(rootID uint32) error {
 	var leftmostID uint32
 	if t.metadata != nil {
 		leftmostID = t.metadata.leftmostID
 	}
 
-	return t.updateMetadata(rootID, leftmostID)
+	return t.updateMetadata(rootID, leftmostID, t.metadata.size)
 }
 
 // putIntoLeaf puts key and value into the node.
@@ -454,6 +461,12 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 
 			parent = parentParentNode
 		}
+	}
+
+	t.metadata.size++
+	err := t.updateSize(t.metadata.size)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to update the tree size to %d: %w", t.metadata.size, err)
 	}
 
 	return nil, false, nil
@@ -774,6 +787,12 @@ func (t *FBPTree) Delete(key []byte) ([]byte, bool, error) {
 
 	if !deleted {
 		return nil, false, nil
+	}
+
+	t.metadata.size--
+	err = t.updateSize(t.metadata.size)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to update the tree size to %d: %w", t.metadata.size, err)
 	}
 
 	return value, true, nil
@@ -1351,7 +1370,7 @@ func (t *FBPTree) ForEach(action func(key []byte, value []byte)) error {
 
 // Size return the size of the tree.
 func (t *FBPTree) Size() int {
-	return t.size
+	return int(t.metadata.size)
 }
 
 // Close closes the tree and free the underlying resources.

@@ -208,7 +208,7 @@ func TestNil(t *testing.T) {
 
 	tree.Put(nil, []byte{1})
 
-	_, ok, err := tree.Get(nil)
+	_, ok, _ := tree.Get(nil)
 	if !ok {
 		t.Fatalf("key nil is not found")
 	}
@@ -643,6 +643,15 @@ func TestSize(t *testing.T) {
 
 		tree.Close()
 	}
+
+	tree, err := Open(dbPath, Order(3))
+	if err != nil {
+		t.Fatalf("failed to open tree: %s", err)
+	}
+
+	if expected != tree.Size() {
+		t.Fatalf("actual size %d is not equal to expected size %d", tree.Size(), expected)
+	}
 }
 
 func TestDeleteMergingThreeTimes(t *testing.T) {
@@ -787,7 +796,10 @@ func TestForEachAfterDeletion(t *testing.T) {
 	}
 }
 
+
 func TestDelete1(t *testing.T) {
+	// TODO: fix this and remove the func
+
 	dbDir, err := ioutil.TempDir(os.TempDir(), "example")
 	if err != nil {
 		panic(fmt.Errorf("failed to create %s: %w", dbDir, err))

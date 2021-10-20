@@ -141,11 +141,12 @@ func decodeNode(data []byte) (*node, error) {
 }
 
 func encodeTreeMetadata(metadata *treeMetadata) []byte {
-	var data [10]byte
+	var data [14]byte
 
 	copy(data[0:2], encodeUint16(metadata.order))
 	copy(data[2:6], encodeUint32(metadata.rootID))
 	copy(data[6:10], encodeUint32(metadata.leftmostID))
+	copy(data[10:14], encodeUint32(metadata.size))
 
 	return data[:]
 }
@@ -155,5 +156,6 @@ func decodeTreeMetadata(data []byte) (*treeMetadata, error) {
 		order:      decodeUint16(data[0:2]),
 		rootID:     decodeUint32(data[2:6]),
 		leftmostID: decodeUint32(data[6:10]),
+		size:       decodeUint32(data[10:14]),
 	}, nil
 }
