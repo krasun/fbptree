@@ -413,10 +413,10 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 		// if the node is full
 		var parentNode *node
 		if n.parentID != 0 {
-			if n, err := t.storage.loadNodeByID(n.parentID); err != nil {
+			if p, err := t.storage.loadNodeByID(n.parentID); err != nil {
 				return nil, false, fmt.Errorf("failed to load parent node %d: %w", n.parentID, err)
 			} else {
-				parentNode = n
+				parentNode = p
 			}
 		}
 
@@ -452,10 +452,10 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 
 			var parentParentNode *node
 			if parent.parentID != 0 {
-				if n, err := t.storage.loadNodeByID(parent.parentID); err != nil {
+				if p, err := t.storage.loadNodeByID(parent.parentID); err != nil {
 					return nil, false, fmt.Errorf("failed to load the parent of the parent node %d: %w", parent.parentID, err)
 				} else {
-					parentParentNode = n
+					parentParentNode = p
 				}
 			}
 
@@ -643,6 +643,14 @@ func (t *FBPTree) putIntoParentAndSplit(parent *node, k []byte, l, r *node) ([]b
 		}
 	}
 
+	err = t.storage.updateNodeByID(l.id, l)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to update the l node %d: %w", parent.id, err)
+	}
+	err = t.storage.updateNodeByID(r.id, r)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to update the r node %d: %w", right.id, err)
+	}
 	err = t.storage.updateNodeByID(parent.id, parent)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to update the parent node %d: %w", parent.id, err)
@@ -789,10 +797,12 @@ func (t *FBPTree) Delete(key []byte) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 
-	t.metadata.size--
-	err = t.updateSize(t.metadata.size)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to update the tree size to %d: %w", t.metadata.size, err)
+	if t.metadata != nil {
+		t.metadata.size--
+		err = t.updateSize(t.metadata.size)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to update the tree size to %d: %w", t.metadata.size, err)
+		}
 	}
 
 	return value, true, nil
@@ -896,12 +906,13 @@ func (t *FBPTree) removeFromIndex(key []byte) error {
 				// take the right sub-tree and find the leftmost key
 				// and update the key
 				nodeID := current.pointers[position+1].asNodeID()
-				current.keys[position], err = t.findLeftmostKey(nodeID)
+				leftmostKey, err := t.findLeftmostKey(nodeID)
 				if err != nil {
 					return fmt.Errorf("failed to find the leftmost key for %d: %w", nodeID, err)
 				}
+				current.keys[position] = leftmostKey
 
-				err := t.storage.updateNodeByID(current.id, current)
+				err = t.storage.updateNodeByID(current.id, current)
 				if err != nil {
 					return fmt.Errorf("failed to update the node %d: %w", current.id, err)
 				}
@@ -974,10 +985,11 @@ func (t *FBPTree) rebalanceFromLeafNode(n *node) error {
 	if leftSiblingPosition >= 0 {
 		// if left sibling exists
 		leftSiblingID := parent.pointers[leftSiblingPosition].asNodeID()
-		leftSibling, err := t.storage.loadNodeByID(leftSiblingID)
+		ls, err := t.storage.loadNodeByID(leftSiblingID)
 		if err != nil {
 			return fmt.Errorf("failed to load the left sibling node by id %d: %w", leftSiblingID, err)
 		}
+		leftSibling = ls
 
 		if leftSibling.keyNum > t.minKeyNum {
 			// borrow from the left sibling
@@ -1007,10 +1019,11 @@ func (t *FBPTree) rebalanceFromLeafNode(n *node) error {
 	if rightSiblingPosition < parent.keyNum+1 {
 		// if right sibling exists
 		rightSiblingID := parent.pointers[rightSiblingPosition].asNodeID()
-		rightSibling, err := t.storage.loadNodeByID(rightSiblingID)
+		rs, err := t.storage.loadNodeByID(rightSiblingID)
 		if err != nil {
 			return fmt.Errorf("failed to load the right sibling node by id %d: %w", rightSiblingID, err)
 		}
+		rightSibling = rs
 
 		if rightSibling.keyNum > t.minKeyNum {
 			// borrow from the right sibling
@@ -1131,10 +1144,11 @@ func (t *FBPTree) rebalanceParentNode(n *node) error {
 	if leftSiblingPosition >= 0 {
 		leftSiblingID := parent.pointers[leftSiblingPosition].asNodeID()
 		// if left sibling exists
-		leftSibling, err := t.storage.loadNodeByID(leftSiblingID)
+		ls, err := t.storage.loadNodeByID(leftSiblingID)
 		if err != nil {
 			return fmt.Errorf("failed to load the left sibling %d: %w", leftSiblingID, err)
 		}
+		leftSibling = ls
 
 		if leftSibling.keyNum > t.minKeyNum {
 			splitKey := parent.keys[keyPositionInParent]
@@ -1181,10 +1195,11 @@ func (t *FBPTree) rebalanceParentNode(n *node) error {
 	if rightSiblingPosition < parent.keyNum+1 {
 		// if right sibling exists
 		rightSiblingID := parent.pointers[rightSiblingPosition].asNodeID()
-		rightSibling, err := t.storage.loadNodeByID(rightSiblingID)
+		rs, err := t.storage.loadNodeByID(rightSiblingID)
 		if err != nil {
 			return fmt.Errorf("failed to load the right sibling id %d: %w", rightSiblingID, err)
 		}
+		rightSibling = rs
 
 		if rightSibling.keyNum > t.minKeyNum {
 			splitKeyPosition := rightSiblingPosition - 1
@@ -1311,6 +1326,11 @@ func (n *node) copyFromRight(from *node, storage *storage) error {
 
 	if n.leaf {
 		n.setNext(from.next())
+		
+		err := storage.updateNodeByID(n.id, n)
+		if err != nil {
+			return fmt.Errorf("failed to update the node %d: %w", n.id, err)
+		}
 	} else {
 		n.pointers[n.keyNum] = from.pointers[from.keyNum]
 
@@ -1370,7 +1390,11 @@ func (t *FBPTree) ForEach(action func(key []byte, value []byte)) error {
 
 // Size return the size of the tree.
 func (t *FBPTree) Size() int {
-	return int(t.metadata.size)
+	if t.metadata != nil {
+		return int(t.metadata.size)
+	}
+
+	return 0
 }
 
 // Close closes the tree and free the underlying resources.

@@ -66,7 +66,7 @@ func encodeNode(node *node) []byte {
 	data = append(data, encodeUint16(uint16(len(node.pointers)))...)
 	for _, pointer := range node.pointers {
 		if pointer == nil {
-			return data
+			break
 		}
 
 		if pointer.isNodeID() {
@@ -77,6 +77,11 @@ func encodeNode(node *node) []byte {
 			data = append(data, encodeUint16(uint16(len(pointer.asValue())))...)
 			data = append(data, pointer.asValue()...)
 		}
+	}
+
+	next := node.next()
+	if node.leaf && next != nil {
+		data = append(data, encodeUint32(next.asNodeID())...)
 	}
 
 	return data
@@ -130,14 +135,23 @@ func decodeNode(data []byte) (*node, error) {
 		}
 	}
 
-	return &node{
+	n := &node{
 		nodeID,
 		leaf,
 		parentID,
 		keys,
 		int(keyNum),
 		pointers,
-	}, nil
+	}
+
+	if leaf && len(data) > position {
+		nodeID := decodeUint32(data[position : position+4])
+		n.setNext(&pointer{nodeID})
+
+		position += 4
+	}
+
+	return n, nil
 }
 
 func encodeTreeMetadata(metadata *treeMetadata) []byte {
