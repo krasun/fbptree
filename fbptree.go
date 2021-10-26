@@ -40,6 +40,7 @@ type config struct {
 	pageSize uint16
 }
 
+// Order option specifies the order of the B+ tree, between 3 and 1000.
 func Order(order int) func(*config) error {
 	return func(c *config) error {
 		if order < 3 {
@@ -56,6 +57,7 @@ func Order(order int) func(*config) error {
 	}
 }
 
+// PageSize option specifies the page size for the B+ tree file.
 func PageSize(pageSize int) func(*config) error {
 	return func(t *config) error {
 		if pageSize < minPageSize {
@@ -72,7 +74,7 @@ func PageSize(pageSize int) func(*config) error {
 	}
 }
 
-// Opens an existent B+ tree or creates a new file.
+// Open opens an existent B+ tree or creates a new file.
 func Open(path string, options ...func(*config) error) (*FBPTree, error) {
 	defaultPageSize := os.Getpagesize()
 	if defaultPageSize > maxPageSize {
@@ -413,11 +415,12 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 		// if the node is full
 		var parentNode *node
 		if n.parentID != 0 {
-			if p, err := t.storage.loadNodeByID(n.parentID); err != nil {
+			p, err := t.storage.loadNodeByID(n.parentID)
+			if err != nil {
 				return nil, false, fmt.Errorf("failed to load parent node %d: %w", n.parentID, err)
-			} else {
-				parentNode = p
 			}
+
+			parentNode = p
 		}
 		parent := parentNode
 
@@ -452,11 +455,12 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 
 			var parentParentNode *node
 			if parent.parentID != 0 {
-				if p, err := t.storage.loadNodeByID(parent.parentID); err != nil {
+				p, err := t.storage.loadNodeByID(parent.parentID)
+				if err != nil {
 					return nil, false, fmt.Errorf("failed to load the parent of the parent node %d: %w", parent.parentID, err)
-				} else {
-					parentParentNode = p
 				}
+
+				parentParentNode = p
 			}
 
 			parent = parentParentNode

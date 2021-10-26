@@ -155,8 +155,6 @@ func decodeNode(data []byte) (*node, error) {
 	if hasNextID {
 		nextID := decodeUint32(data[position : position+4])
 		n.setNext(&pointer{nextID})
-
-		position += 4
 	}
 
 	return n, nil
