@@ -498,7 +498,7 @@ func TestPutAndGetRandomized(t *testing.T) {
 
 func TestPutAndDeleteRandomized(t *testing.T) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
-	size := 1000
+	size := 10000
 	keys := r.Perm(size)
 
 	dbDir, err := ioutil.TempDir(os.TempDir(), "example")

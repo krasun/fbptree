@@ -2,9 +2,6 @@ package fbptree
 
 import "fmt"
 
-// TODO: remove cache after all fixes with the logic
-var cache map[uint32]*node = make(map[uint32]*node)
-
 // storage an abstraction over the storing mechanism.
 type storage struct {
 	pager   *pager
@@ -75,44 +72,10 @@ func (s *storage) updateNodeByID(nodeID uint32, node *node) error {
 		return fmt.Errorf("failed to write the record %d: %w", nodeID, err)
 	}
 
-	cache[nodeID] = copynode(node)
-
 	return nil
 }
 
-func copynode(n *node) *node {
-	var n1 node
-
-	n1 = *n
-
-	newKeys := make([][]byte, len(n.keys))
-	for i, key := range n.keys {
-		newKeys[i] = copyBytes(key)
-	}
-	n1.keys = newKeys
-
-	newPointers := make([]*pointer, len(n.pointers))
-	for i, p := range n.pointers {
-		if p == nil {
-			continue
-		}
-
-		if p.isValue() {
-			newPointers[i] = &pointer{copyBytes(p.asValue())}
-		} else if p.isNodeID() {
-			newPointers[i] = &pointer{value: p.asNodeID()}
-		}
-	}
-	n1.pointers = newPointers
-
-	return &n1
-}
-
 func (s *storage) loadNodeByID(nodeID uint32) (*node, error) {
-	if n, ok := cache[nodeID]; ok {
-		return n, nil
-	}
-
 	data, err := s.records.read(nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read record %d: %w", nodeID, err)

@@ -419,8 +419,8 @@ func (t *FBPTree) putIntoLeaf(n *node, k, v []byte) ([]byte, bool, error) {
 				parentNode = p
 			}
 		}
-
 		parent := parentNode
+
 		left, right, err := t.putIntoLeafAndSplit(n, insertPos, k, v)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to split the node %d: %w", n.id, err)
@@ -588,7 +588,16 @@ func (t *FBPTree) putIntoParentAndSplit(parent *node, k []byte, l, r *node) ([]b
 	insertNode.keyNum++
 
 	l.parentID = insertNode.id
+	err = t.storage.updateNodeByID(l.id, l)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to update the l node %d: %w", parent.id, err)
+	}
+
 	r.parentID = insertNode.id
+	err = t.storage.updateNodeByID(r.id, r)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to update the r node %d: %w", right.id, err)
+	}
 
 	middleKey := right.keys[0]
 
@@ -643,23 +652,15 @@ func (t *FBPTree) putIntoParentAndSplit(parent *node, k []byte, l, r *node) ([]b
 		}
 	}
 
-	err = t.storage.updateNodeByID(l.id, l)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to update the l node %d: %w", parent.id, err)
-	}
-	err = t.storage.updateNodeByID(r.id, r)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to update the r node %d: %w", right.id, err)
-	}
 	err = t.storage.updateNodeByID(parent.id, parent)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to update the parent node %d: %w", parent.id, err)
+		return nil, nil, nil, fmt.Errorf("failed to update the right node %d: %w", right.id, err)
 	}
 	err = t.storage.updateNodeByID(right.id, right)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to update the right node %d: %w", right.id, err)
 	}
-	err = t.storage.updateNodeByID(insertNode.id, insertNode)
+	err = t.storage.updateNodeByID(left.id, left)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to update the left node %d: %w", left.id, err)
 	}
@@ -727,7 +728,7 @@ func (t *FBPTree) putIntoLeafAndSplit(n *node, insertPos int, k, v []byte) (*nod
 		return nil, nil, fmt.Errorf("failed to update the right node %d: %w", right.id, err)
 	}
 
-	err = t.storage.updateNodeByID(insertNode.id, insertNode)
+	err = t.storage.updateNodeByID(left.id, left)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to update the left node %d: %w", left.id, err)
 	}
@@ -1326,7 +1327,7 @@ func (n *node) copyFromRight(from *node, storage *storage) error {
 
 	if n.leaf {
 		n.setNext(from.next())
-		
+
 		err := storage.updateNodeByID(n.id, n)
 		if err != nil {
 			return fmt.Errorf("failed to update the node %d: %w", n.id, err)

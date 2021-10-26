@@ -64,11 +64,8 @@ func encodeNode(node *node) []byte {
 
 	data = append(data, encodeUint16(uint16(pointerNum))...)
 	data = append(data, encodeUint16(uint16(len(node.pointers)))...)
-	for _, pointer := range node.pointers {
-		if pointer == nil {
-			break
-		}
-
+	for i := 0; i < pointerNum; i++ {
+		pointer := node.pointers[i]
 		if pointer.isNodeID() {
 			data = append(data, 0)
 			data = append(data, encodeUint32(pointer.asNodeID())...)
@@ -79,9 +76,14 @@ func encodeNode(node *node) []byte {
 		}
 	}
 
-	next := node.next()
-	if node.leaf && next != nil {
-		data = append(data, encodeUint32(next.asNodeID())...)
+	var nextID uint32
+	if node.next() != nil {
+		nextID = node.next().asNodeID()
+		data = append(data, encodeBool(true)...)
+		data = append(data, encodeUint32(nextID)...)
+	} else {
+		data = append(data, encodeBool(false)...)
+		data = append(data, 0)
 	}
 
 	return data
@@ -122,12 +124,15 @@ func decodeNode(data []byte) (*node, error) {
 
 			nodeID := decodeUint32(data[position : position+4])
 			position += 4
+
 			pointers[p] = &pointer{nodeID}
 		} else if data[position] == 1 {
 			position += 1
 			// value
+
 			valueSize := int(decodeUint16(data[position : position+2]))
 			position += 2
+
 			value := data[position : position+valueSize]
 			position += valueSize
 
@@ -144,9 +149,12 @@ func decodeNode(data []byte) (*node, error) {
 		pointers,
 	}
 
-	if leaf && len(data) > position {
-		nodeID := decodeUint32(data[position : position+4])
-		n.setNext(&pointer{nodeID})
+	hasNextID := decodeBool(data[position : position+1])
+	position += 1
+
+	if hasNextID {
+		nextID := decodeUint32(data[position : position+4])
+		n.setNext(&pointer{nextID})
 
 		position += 4
 	}

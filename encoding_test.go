@@ -28,14 +28,14 @@ func TestEncodeDecodeNode(t *testing.T) {
 		leaf:     true,
 		parentID: 75,
 		keys: [][]byte{
-			[]byte("test key 1"),
-			[]byte("test key 2"),
+			{1, 2, 3, 4},
+			{5, 6, 7, 8},
 			nil,
 		},
 		pointers: []*pointer{
 			{uint32(42)},
-			{[]byte("test value 1")},
-			nil,
+			{[]byte{1, 2, 3, 4}},
+			{uint32(17)},
 		},
 		keyNum: 2,
 	}
