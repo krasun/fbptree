@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/krasun/fbptree)](https://goreportcard.com/report/github.com/krasun/fbptree)
 [![GoDoc](https://godoc.org/https://godoc.org/github.com/krasun/fbptree?status.svg)](https://godoc.org/github.com/krasun/fbptree)
 
-A persistent storage (in file) based using [B+ tree](https://en.wikipedia.org/wiki/B%2B_tree) with byte-slice keys and values. 
+`fbptree` is a persistent key-value storage engine based on [B+ tree](https://en.wikipedia.org/wiki/B%2B_tree) with byte-slice keys and values. 
 
 ## Installation 
 
