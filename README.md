@@ -1,6 +1,6 @@
 # **fbp**tree
 
-[![Build Status](https://app.travis-ci.com/krasun/fbptree.svg?branch=main)](https://app.travis-ci.com/krasun/fbptree)
+[![Build](https://github.com/krasun/fbptree/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/krasun/fbptree/actions/workflows/build.yml)
 [![codecov](https://codecov.io/gh/krasun/fbptree/branch/main/graph/badge.svg?token=8NU6LR4FQD)](https://codecov.io/gh/krasun/fbptree)
 [![Go Report Card](https://goreportcard.com/badge/github.com/krasun/fbptree)](https://goreportcard.com/report/github.com/krasun/fbptree)
 [![GoDoc](https://godoc.org/https://godoc.org/github.com/krasun/fbptree?status.svg)](https://godoc.org/github.com/krasun/fbptree)
